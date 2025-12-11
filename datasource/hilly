@@ -1,0 +1,39 @@
+No	Indikator	Simbol	Deskripsi	Min Literatur	Max Literatur	Min Hilly	Max Hilly	Unit
+1	Rata-rata kecepatan	II	Kecepatan rata-rata selama siklus	25	35	30	50	km/h
+2	Kecepatan maksimum	V_max	Nilai tertinggi kecepatan tercapai	60	90	80	130	km/h
+3	Idle time ratio	T_i	Proporsi waktu berhenti terhadap total durasi	0,15	0,25	0,05	0,15	-
+4	Acceleration time ratio	T_a	Proporsi waktu percepatan	0,3	0,4	0,35	0,5	-
+5	Deceleration time ratio	T_d	Proporsi waktu perlambatan	0,25	0,35	0,28	0,42	-
+6	Standar deviasi kecepatan	σ_v	Variasi fluktuasi kecepatan	10	20	15	26	km/h
+7	Standar deviasi percepatan	σ_a	Variasi intensitas akselerasi	0,3	0,6	0,5	0,8	m/s²
+8	Rata-rata percepatan positif	a_pos	Rata-rata nilai percepatan positif	0,5	1,5	0,7	1,7	m/s²
+9	Rata-rata percepatan negatif	a_neg	Rata-rata nilai perlambatan	-1,5	-0,5	-1,7	-0,7	m/s²
+10	RMS percepatan	RMS_a	Akar rata-rata kuadrat percepatan	0,6	1,5	0,8	1,65	m/s²
+11	Positive Kinetic Energy	PKE	Energi kinetik positif per satuan jarak	0,2	1,5	0,6	1,4	kJ/m
+12	Kinetic Intensity	KI	Indeks dinamika gerak kendaraan	0,3	1,5	0,6	1,3	-
+13	Percepatan maksimum	a_max	Nilai puncak percepatan positif	1,5	3	1,8	3	m/s²
+14	Perlambatan maksimum	a_min	Nilai puncak percepatan negatif	-3	-1,5	-3	-1,8	m/s²
+15	Frekuensi berhenti per km	n_stop/km	Jumlah berhenti per kilometer	3	6	1	4	/km
+16	Frekuensi berhenti per menit	n_stop/min	Jumlah berhenti per menit waktu	0,2	0,5	0,08	0,35	/min
+17	Rasio waktu jelajah	T_c	Proporsi waktu cruise (|a|<0.2)	0,2	0,35	0,15	0,3	-
+18	Durasi total siklus	T	Total waktu simulasi (s)	1000	1500	1000	1500	s
+19	Jarak tempuh total	L	Total jarak perjalanan (km)	6	12	6	12	km
+20	Energi spesifik	E_spec	Energi total dibagi jarak tempuh	1,8	2,3	2,1	2,8	kWh/km
+21	Energi total	E_tot	Energi keseluruhan siklus	150	250	160	280	kWh
+22	Daya rata-rata traksi	P_mean	Rata-rata daya penggerak kendaraan	10	25	18	40	kW
+23	Daya puncak traksi	P_max	Daya maksimum kendaraan selama siklus	40	120	70	150	kW
+24	Rasio energi regeneratif	E_regen	Proporsi energi pengereman balik	0,05	0,25	0,1	0,3	-
+25	Rasio daya bantu	P_aux/P_tot	Perbandingan daya sistem bantu terhadap total	0,05	0,15	0,06	0,16	-
+26	Kemiringan jalan rata-rata	θ	Rata-rata tanjakan/lerehan (%)	0	5	4	10	%
+27	Perubahan elevasi	Δh	Total kenaikan dan penurunan ketinggian	0	100	80	200	m
+28	Panjang segmen rata-rata	L_seg	Jarak antar titik berhenti	200	400	300	600	m
+29	Urban Density Factor	UDF	Rasio stop/km terhadap kecepatan rata-rata	0,08	0,2	0,02	0,12	-
+30	Aggressiveness Index	AI	Rasio percepatan terhadap perlambatan	0,8	1,2	0,85	1,25	-
+31	Driving Smoothness	DS	Indeks kelancaran gaya mengemudi	0,3	0,7	0,35	0,65	-
+32	Skewness percepatan	Sk_a	Momen ke-3 distribusi percepatan	-1	1	-0,8	0,8	-
+33	Reaction time	t_r	Waktu jeda antara stop dan akselerasi	1	4	1,2	3,2	s
+34	Throttle variance	σ_th	Variasi bukaan pedal akselerator	0,05	0,2	0,1	0,25	-
+35	Korelasi kecepatan nyata-sintetis	r	Koefisien korelasi antar profil kecepatan	0,9	1	0,88	0,99	-
+36	RMSE kecepatan	RMSE_v	Rata-rata error kecepatan sintetis	0	3	0,5	2	km/h
+37	Entropy Index	H	Ukuran variasi parameter global	1	1,5	1,1	1,4	-
+38	Grey Similarity Grade	γ	Derajat kesamaan abu-abu antar siklus	0,85	1	0,83	0,98	-
