@@ -1,137 +1,144 @@
-# file: indicators.py (updated)
+"""
+indicators.py
+Compute indicators for driving cycles, plus EDI and BMSI utilities.
+"""
 import numpy as np
 import pandas as pd
 
-def compute_indicators(v, dt, params, scenario_meta):
-    """
-    Menghitung 38 indikator driving cycle dari v(t) + analisis baterai
-    """
-    m = params.get("mass", 1500)
+def compute_indicators(v, dt=1.0, params=None, scenario_meta=None):
+    if params is None: params = {}
+    if scenario_meta is None: scenario_meta = {}
+    m = params.get("mass", 1300.0)
     g = 9.81
     Crr = params.get("Crr", 0.015)
     Cd = params.get("Cd", 0.29)
     A = params.get("A", 2.2)
     rho = params.get("rho", 1.225)
-    grade = scenario_meta.get("grade", np.zeros_like(v))
-    
-    # Parameter baterai
-    battery_capacity = params.get("battery_capacity", 50)  # kWh
-    motor_efficiency = params.get("motor_efficiency", 0.85)
-    regen_efficiency = params.get("regen_efficiency", 0.70)
-    auxiliary_power = params.get("auxiliary_power", 0.5)  # kW untuk AC, dll
+    eta_motor = params.get("eta_motor", 0.90)
 
-    # Turunan
+    grade = np.array(scenario_meta.get("grade", np.zeros_like(v)))
+    time = np.arange(0, len(v)*dt, dt)
+
     a = np.gradient(v, dt)
     jerk = np.gradient(a, dt)
-    dist = np.cumsum(v * dt)
-    dist_km = dist[-1] / 1000
+    distance = np.cumsum(v * dt)
+    distance_km = distance[-1] / 1000.0 if distance[-1] > 0 else 0.0
 
-    # Gaya
     F_rr = m * g * Crr * np.cos(np.arctan(grade))
-    F_aero = 0.5 * rho * Cd * A * v ** 2
+    F_aero = 0.5 * rho * Cd * A * (v**2)
     F_grade = m * g * np.sin(np.arctan(grade))
     F_trac = m * a + F_rr + F_aero + F_grade
+
     P_wheel = F_trac * v
-    P_pos = np.maximum(P_wheel, 0)
-    E_Wh = np.sum(P_pos * dt) / 3600
-    ev_Wh_per_km = E_Wh / (dist_km + 1e-9)
-    peak_power = np.max(np.abs(P_wheel)) / 1000
+    P_wheel_pos = np.maximum(P_wheel, 0.0)
+    E_input_Wh = np.sum(P_wheel_pos * dt) / 3600.0
+    ev_Wh_per_km = (E_input_Wh / distance_km) if distance_km > 0 else np.nan
+    peak_power_kW = np.max(np.abs(P_wheel))/1000.0 if len(P_wheel)>0 else 0.0
 
-    # ANALISIS BATERAI
-    # Daya motor (traction dan regenerative braking)
-    P_motor_traction = np.where(P_wheel > 0, P_wheel / motor_efficiency, 0)
-    P_motor_regen = np.where(P_wheel < 0, P_wheel * regen_efficiency, 0)
-    P_motor_total = P_motor_traction + P_motor_regen
-    
-    # Daya auxiliary (konstan)
-    P_auxiliary = auxiliary_power * 1000  # Convert to W
-    
-    # Daya total dari baterai
-    P_battery = np.maximum(P_motor_total + P_auxiliary, 0)
-    
-    # Energi dari baterai
-    E_battery_Wh = np.sum(P_battery * dt) / 3600
-    
-    # Energi regeneratif
-    E_regen_Wh = -np.sum(np.minimum(P_motor_regen, 0) * dt) / 3600
-    
-    # Konsumsi energi baterai per km
-    battery_Wh_per_km = E_battery_Wh / (dist_km + 1e-9)
-    
-    # State of Charge (SOC) analysis
-    initial_soc = params.get("initial_soc", 100)  # %
-    battery_capacity_Wh = battery_capacity * 1000
-    soc_consumed = (E_battery_Wh / battery_capacity_Wh) * 100
-    final_soc = max(0, initial_soc - soc_consumed)
-    
-    # C-rate analysis
-    P_battery_kW = P_battery / 1000
-    c_rate_peak = np.max(P_battery_kW) / battery_capacity
-    c_rate_avg = np.mean(P_battery_kW) / battery_capacity
-    
-    # Battery stress indicators
-    high_power_events = np.sum(P_battery_kW > battery_capacity * 0.8)  # Events > 0.8C
-    battery_stress = np.mean(P_battery_kW > battery_capacity * 0.5) #  % waktu > 0.5C
+    is_idle = (v < 0.5).astype(float)
+    is_accel = (a > 0.2).astype(float)
+    is_decel = (a < -0.2).astype(float)
+    is_cruise = ((np.abs(a) <= 0.2) & (v > 0.5)).astype(float)
 
-    # State pengemudi
-    is_idle = (v < 0.5).astype(int)
-    is_accel = (a > 0.2).astype(int)
-    is_decel = (a < -0.2).astype(int)
-    is_cruise = ((np.abs(a) <= 0.1) & (v > 0.5)).astype(int)
+    def rms(x): return float(np.sqrt(np.mean(np.array(x)**2)))
+    def pct(x): return float(np.mean(np.array(x)))
 
-    def rms(x): return np.sqrt(np.mean(x**2))
+    win_s = int(max(1, round(10.0/dt)))
+    ser_v = pd.Series(v)
+    ser_a = pd.Series(a)
+    moving_avg_speed = ser_v.rolling(win_s, min_periods=1).mean().values
+    moving_avg_accel = ser_a.rolling(win_s, min_periods=1).mean().values
 
     indicators = {
-        "avg_speed": np.mean(v),
-        "max_speed": np.max(v),
-        "min_speed": np.min(v),
-        "accel_var": np.var(a),
-        "jerk_rms": rms(jerk),
-        "distance_km": dist_km,
-        "ev_Wh_per_km": ev_Wh_per_km,
-        "peak_power_kW": peak_power,
-        "idle_ratio": np.mean(is_idle),
-        "accel_ratio": np.mean(is_accel),
-        "decel_ratio": np.mean(is_decel),
-        "cruise_ratio": np.mean(is_cruise),
-        "F_rr_mean": np.mean(F_rr),
-        "F_aero_mean": np.mean(F_aero),
-        "F_grade_mean": np.mean(F_grade),
-        "E_total_Wh": E_Wh,
-        "energy_efficiency": 1 - (np.mean(F_aero) / np.mean(F_trac + 1e-9)),
-        "grade_mean": np.mean(grade),
-        "grade_std": np.std(grade),
-        "traffic_density": scenario_meta.get("traffic_density", 0.5),
-        "road_type": scenario_meta.get("road_type", "urban"),
-        "temperature_C": scenario_meta.get("temperature", 25),
-        "weather": scenario_meta.get("weather", "clear"),
-        "moving_avg_speed": pd.Series(v).rolling(int(10 / dt)).mean().mean(),
-        "moving_avg_accel": pd.Series(a).rolling(int(10 / dt)).mean().mean(),
-        "speed_std": np.std(v),
-        "accel_std": np.std(a),
-        "idle_ratio_window": pd.Series(is_idle).rolling(int(10 / dt)).mean().mean(),
-        "stop_duration": np.sum(is_idle) * dt,
-        "accel_event_duration": np.sum(is_accel) * dt,
-        "total_resistance_mean": np.mean(F_rr + F_aero + F_grade),
-        "power_mean_kW": np.mean(P_pos) / 1000,
-        "power_std_kW": np.std(P_pos) / 1000,
-        "battery_stress_proxy": np.mean(np.abs(P_wheel) > 0.8 * peak_power),
-        "eco_index_proxy": 1 / (ev_Wh_per_km * (1 + rms(jerk))),
-        "aggressiveness_index": np.mean(a > 1.5),
-        "comfort_index": 1 / (1 + rms(jerk)),
-        
-        # INDIKATOR BATERAI BARU
-        "battery_energy_Wh": E_battery_Wh,
-        "battery_Wh_per_km": battery_Wh_per_km,
-        "regen_energy_Wh": E_regen_Wh,
-        "regen_efficiency": E_regen_Wh / (E_battery_Wh + 1e-9),
-        "final_soc_percent": final_soc,
-        "soc_consumed_percent": soc_consumed,
-        "c_rate_peak": c_rate_peak,
-        "c_rate_avg": c_rate_avg,
-        "battery_stress_high_power_events": high_power_events,
-        "battery_stress_time_ratio": battery_stress,
-        "auxiliary_energy_Wh": (P_auxiliary * len(v) * dt) / 3600,
-        "motor_efficiency_actual": E_Wh / (E_battery_Wh + 1e-9)
+        "time_s_total": float(time[-1]) if len(time)>0 else 0.0,
+        "dt_s": float(dt),
+        "distance_m": float(distance[-1]),
+        "elapsed_time_s": float(time[-1]) if len(time)>0 else 0.0,
+        "speed_mps_mean": float(np.mean(v)),
+        "speed_kph_mean": float(np.mean(v)*3.6),
+        "accel_mps2_mean": float(np.mean(a)),
+        "jerk_mps3_rms": float(rms(jerk)),
+        "max_speed_mps": float(np.max(v)) if len(v)>0 else 0.0,
+        "avg_speed_window_mps": float(np.mean(moving_avg_speed)),
+        "accel_variance": float(np.var(a)),
+        "is_idle_ratio": float(pct(is_idle)),
+        "is_accel_ratio": float(pct(is_accel)),
+        "is_decel_ratio": float(pct(is_decel)),
+        "is_cruise_ratio": float(pct(is_cruise)),
+        "stop_duration_s": float(np.sum(is_idle) * dt),
+        "accel_event_duration_s": float(np.sum(is_accel) * dt),
+        "tractive_effort_N_mean": float(np.mean(F_trac)),
+        "wheel_power_proxy_kW_mean": float(np.mean(P_wheel)/1000.0),
+        "wheel_power_proxy_kW_pos_mean": float(np.mean(P_wheel_pos)/1000.0),
+        "energy_input_Wh_total": float(E_input_Wh),
+        "rolling_resistance_N_mean": float(np.mean(F_rr)),
+        "aero_drag_N_mean": float(np.mean(F_aero)),
+        "total_resistance_N_mean": float(np.mean(F_rr + F_aero + F_grade)),
+        "road_grade_mean": float(np.mean(grade)),
+        "curvature_mean": float(np.mean(scenario_meta.get('curvature', np.zeros_like(v)))),
+        "road_type": str(scenario_meta.get('road_type', 'generic')),
+        "traffic_density_index": float(scenario_meta.get('traffic_density', 0.5)),
+        "weather_condition": str(scenario_meta.get('weather', 'clear')),
+        "temperature_C": float(scenario_meta.get('temperature', 25.0)),
+        "moving_avg_speed_mean": float(np.mean(moving_avg_speed)),
+        "moving_avg_accel_mean": float(np.mean(moving_avg_accel)),
+        "speed_std": float(np.std(v)),
+        "accel_std": float(np.std(a)),
+        "idle_ratio_window": float(np.mean(pd.Series(is_idle).rolling(win_s, min_periods=1).mean().values)),
+        "jerk_rms": float(rms(jerk)),
+        "aggressiveness_index": float(np.mean(np.abs(a) > 2.0)),
+        "ev_Wh_per_km": float(ev_Wh_per_km) if not np.isnan(ev_Wh_per_km) else np.nan,
+        "peak_power_kW": float(peak_power_kW),
+        "power_mean_kW": float(np.mean(P_wheel_pos)/1000.0),
+        "battery_stress_time_s": float(np.sum((np.abs(P_wheel) > 0.6 * peak_power_kW * 1000.0).astype(float)) * dt),
+        "energy_efficiency_proxy": float(1.0 - (np.mean(F_aero) / (np.mean(np.abs(F_trac)) + 1e-9)))
     }
     return indicators
+
+def calc_EDI(df, weights=None):
+    if weights is None:
+        weights = {"energy":0.4, "jerk":0.3, "accel":0.2, "idle":0.1}
+    if isinstance(df, dict):
+        df = pd.DataFrame([df])
+    df = df.copy()
+    E = 1.0 / (df['ev_Wh_per_km'].astype(float) + 1e-9)
+    J = 1.0 / (df['jerk_rms'].astype(float) + 1e-9)
+    A = 1.0 / (np.abs(df['accel_mps2_mean'].astype(float)) + 1e-9)
+    S = 1.0 - df['is_idle_ratio'].astype(float)
+    def norm(s):
+        s = s.astype(float)
+        mn, mx = s.min(), s.max()
+        if mx == mn:
+            return pd.Series(0.5, index=s.index)
+        return (s - mn) / (mx - mn)
+    En = norm(E); Jn = norm(J); An = norm(A); Sn = norm(S)
+    df['EDI'] = weights['energy']*En + weights['jerk']*Jn + weights['accel']*An + weights['idle']*Sn
+    return df
+
+def calc_BMSI(cycle_df, params=None):
+    if params is None:
+        params = {}
+    soc = cycle_df.get('soc', None)
+    if soc is None:
+        soc = np.linspace(1.0, np.random.uniform(0.2, 0.95), len(cycle_df))
+    I = cycle_df.get('current_A', None)
+    if I is None:
+        I = np.random.normal(50, 10, len(soc))
+    T = cycle_df.get('temp_C', np.ones_like(I)*25.0)
+    delta_soc = float(np.nanmax(soc) - np.nanmin(soc))
+    sigma_I = float(np.std(I))
+    Tavg = float(np.mean(T))
+    DOD = delta_soc * 100.0
+    delta_soc_max = params.get('delta_soc_max', 0.8)
+    sigma_I_max = params.get('sigma_I_max', 200.0)
+    T_max = params.get('T_max', 60.0)
+    DOD_max = params.get('DOD_max', 80.0)
+    score = (
+        0.25 * max(0.0, 1.0 - (delta_soc / delta_soc_max)) +
+        0.25 * max(0.0, 1.0 - (sigma_I / sigma_I_max)) +
+        0.25 * max(0.0, 1.0 - (Tavg / T_max)) +
+        0.25 * max(0.0, 1.0 - (DOD / DOD_max))
+    )
+    eta = 1.0 - min(0.9, sigma_I / (abs(np.mean(I)) + 1e-9)) * 0.1
+    bmsi = float(max(0.0, min(1.0, score * eta)))
+    return bmsi

@@ -1,673 +1,591 @@
-# driving_cycle_gui_fixed.py
-# Layout fixes for 1366x768: scrollable left panel, responsive plots/tables, spacing/margins
 import sys
 import os
 import pandas as pd
 import numpy as np
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
-                             QTableWidget, QTableWidgetItem, QTabWidget, QGroupBox,
-                             QProgressBar, QMessageBox, QFileDialog, QSplitter,
-                             QHeaderView, QFormLayout, QLineEdit, QSizePolicy, QScrollArea)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QLabel, QComboBox, QPushButton, QSpinBox, QDoubleSpinBox, 
+                             QTextEdit, QTabWidget, QGroupBox, QCheckBox, QProgressBar,
+                             QFileDialog, QMessageBox, QSplitter, QTableWidget, 
+                             QTableWidgetItem, QHeaderView, QSlider, QFrame)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
-from hybrid_nsga3_hba_optimizer import add_optimization_tab
-from performance_index_evaluator import add_performance_index_tab, add_all_optimization_tabs
+from PyQt5.QtGui import QFont, QPalette, QColor
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import warnings
+warnings.filterwarnings('ignore')
 
-# Try to import user's generator; fallback to stub for testing if not available
+# Import generator class (pastikan file generator ada di direktori yang sama)
 try:
-    from synthetic_driving_cycle_generator import DrivingCycleGenerator
-except Exception:
-    class DrivingCycleGenerator:
-        def __init__(self, duration=600, dt=1.0):
-            self.duration = duration
-            self.dt = dt
-            self.vehicle_params = {}
-        def generate_dataset_individual_files(self, samples_per_domain, output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-            domains = ['hilly','urban','suburban','congested','highway']
-            meta = []
-            for d in domains:
-                ddir = os.path.join(output_dir, d)
-                os.makedirs(ddir, exist_ok=True)
-                for i in range(samples_per_domain):
-                    cid = f'{d}_{i:03d}'
-                    times = np.arange(0, self.duration, self.dt)
-                    vel = np.clip(15 + 5*np.sin(times/30.0) + np.random.randn(len(times))*1.0, 0, 30)
-                    df = pd.DataFrame({'time': times, 'velocity': vel})
-                    df.to_csv(os.path.join(ddir, f'{cid}.csv'), index=False)
-                    meta.append({'cycle_id': cid, 'domain': d,
-                                 'battery_Wh_per_km': float(np.random.uniform(100, 350)),
-                                 'battery_energy_Wh': float(np.random.uniform(1000,5000)),
-                                 'regen_energy_Wh': float(np.random.uniform(10,300)),
-                                 'final_soc_percent': float(np.random.uniform(20,100)),
-                                 'c_rate_peak': float(np.random.uniform(0.5,3.0)),
-                                 'c_rate_avg': float(np.random.uniform(0.2,1.0)),
-                                 'avg_speed': float(np.random.uniform(10,50)),
-                                 'max_speed': float(np.random.uniform(40,120)),
-                                 'distance_km': float(np.random.uniform(1,50)),
-                                 'ev_Wh_per_km': float(np.random.uniform(80,400)),
-                                 'motor_efficiency_actual': float(np.random.uniform(0.7,0.95)),
-                                 'battery_stress_high_power_events': float(np.random.uniform(0,5)),
-                                 'soc_consumed_percent': float(np.random.uniform(1,20))})
-            pd.DataFrame(meta).to_csv(os.path.join(output_dir, 'metadata.csv'), index=False)
-
+    from driving_cycle_generator import UnifiedDrivingCycleGenerator
+except ImportError:
+    # Fallback jika tidak ada generator
+    class UnifiedDrivingCycleGenerator:
+        def __init__(self):
+            pass
 
 class GenerationThread(QThread):
-    """Thread to run generation without freezing GUI"""
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, generator, samples_per_domain, output_dir):
+    """Thread untuk generate dataset agar tidak freeze GUI"""
+    progress_signal = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(object)
+    error_signal = pyqtSignal(str)
+    
+    def __init__(self, generator, domains, methods, cycles_per_domain, duration_range):
         super().__init__()
         self.generator = generator
-        self.samples_per_domain = samples_per_domain
-        self.output_dir = output_dir
-
+        self.domains = domains
+        self.methods = methods
+        self.cycles_per_domain = cycles_per_domain
+        self.duration_range = duration_range
+    
     def run(self):
         try:
-            # simulate progress quickly
-            for i in range(101):
-                self.progress.emit(i)
-                self.msleep(5)
-            # real generation
-            self.generator.generate_dataset_individual_files(self.samples_per_domain, self.output_dir)
-            self.finished.emit(self.output_dir)
+            total_cycles = len(self.domains) * len(self.methods) * self.cycles_per_domain
+            current_progress = 0
+            
+            dataset = []
+            cycle_id = 0
+            
+            for domain_idx, domain in enumerate(self.domains):
+                self.progress_signal.emit(
+                    int((domain_idx / len(self.domains)) * 100),
+                    f"Processing domain: {domain}"
+                )
+                
+                for method_idx, method in enumerate(self.methods):
+                    for cycle_idx in range(self.cycles_per_domain):
+                        duration = np.random.randint(*self.duration_range)
+                        
+                        try:
+                            if method == 'Markov Chain':
+                                cycle_data = self.generator.markov_chain_method(domain, duration, cycle_id)
+                            elif method == 'Segment Based':
+                                cycle_data = self.generator.segment_based_method(domain, duration, cycle_id)
+                            elif method == 'Fourier Series':
+                                cycle_data = self.generator.fourier_method(domain, duration, cycle_id)
+                            elif method == 'Rule Based FSM':
+                                cycle_data = self.generator.rule_based_fsm_method(domain, duration, cycle_id)
+                            elif method == 'NSGA-III Optimized':
+                                cycle_data = self.generator.nsga3_optimized_method(domain, duration, cycle_id)
+                            
+                            # Validate cycle
+                            validation = self.generator.validate_cycle(cycle_data)
+                            cycle_data['metadata']['validation'] = validation
+                            dataset.append(cycle_data)
+                            cycle_id += 1
+                            
+                        except Exception as e:
+                            print(f"Error in {method} for {domain}: {e}")
+                        
+                        current_progress += 1
+                        progress_percent = int((current_progress / total_cycles) * 100)
+                        self.progress_signal.emit(
+                            progress_percent,
+                            f"Generated {current_progress}/{total_cycles} cycles"
+                        )
+            
+            self.finished_signal.emit(dataset)
+            
         except Exception as e:
-            self.error.emit(str(e))
+            self.error_signal.emit(str(e))
 
-
-class MPLCanvas(FigureCanvas):
-    """Responsive matplotlib canvas with tight_layout and expanding policy"""
-    def __init__(self, parent=None, width=6, height=4, dpi=100):
+class MatplotlibCanvas(FigureCanvas):
+    """Canvas untuk plot matplotlib"""
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi)
         super().__init__(self.fig)
         self.setParent(parent)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.updateGeometry()
+        self.axes = self.fig.add_subplot(111)
+        self.fig.tight_layout()
 
-    def plot_cycle(self, time, velocity, domain, cycle_id):
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        ax.plot(time, velocity * 3.6, '-', linewidth=1.2)
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Speed (km/h)')
-        ax.set_title(f'Driving Cycle: {domain} - {cycle_id}')
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim(bottom=0)
-        self.fig.tight_layout(pad=2.0)
-        self.draw()
-
-    def plot_battery_analysis(self, df):
-        self.fig.clear()
-        if df.empty:
-            ax = self.fig.add_subplot(111)
-            ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
-            self.draw()
-            return
-        gs = self.fig.add_gridspec(2, 2)
-        ax1 = self.fig.add_subplot(gs[0, 0])
-        ax2 = self.fig.add_subplot(gs[0, 1])
-        ax3 = self.fig.add_subplot(gs[1, 0])
-        ax4 = self.fig.add_subplot(gs[1, 1])
-
-        domains = df['domain'].unique()
-        battery_data = [df[df['domain'] == d]['battery_Wh_per_km'] for d in domains]
-        ax1.boxplot(battery_data, labels=domains)
-        ax1.set_ylabel('Battery Consumption (Wh/km)')
-        ax1.set_title('Battery Consumption by Domain')
-        ax1.tick_params(axis='x', rotation=30)
-
-        soc_data = [df[df['domain'] == d]['soc_consumed_percent'] for d in domains]
-        ax2.boxplot(soc_data, labels=domains)
-        ax2.set_ylabel('SOC Consumed (%)')
-        ax2.set_title('State of Charge Consumption')
-        ax2.tick_params(axis='x', rotation=30)
-
-        regen_data = [df[df['domain'] == d]['regen_energy_Wh'] for d in domains]
-        ax3.boxplot(regen_data, labels=domains)
-        ax3.set_ylabel('Regen Energy (Wh)')
-        ax3.set_title('Regenerative Braking Energy')
-        ax3.tick_params(axis='x', rotation=30)
-
-        crate_data = [df[df['domain'] == d]['c_rate_peak'] for d in domains]
-        ax4.boxplot(crate_data, labels=domains)
-        ax4.set_ylabel('Peak C-rate')
-        ax4.set_title('Battery Peak C-rate by Domain')
-        ax4.tick_params(axis='x', rotation=30)
-
-        self.fig.tight_layout(pad=2.0)
-        self.draw()
-
-    def plot_comparison(self, df):
-        self.fig.clear()
-        if df.empty:
-            ax = self.fig.add_subplot(111)
-            ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
-            self.draw()
-            return
-        gs = self.fig.add_gridspec(2, 2)
-        ax1 = self.fig.add_subplot(gs[0, :])
-        ax2 = self.fig.add_subplot(gs[1, 0])
-        ax3 = self.fig.add_subplot(gs[1, 1])
-
-        domains = df['domain'].unique()
-        battery_energy = [df[df['domain'] == d]['battery_energy_Wh'].mean() for d in domains]
-        regen_energy = [df[df['domain'] == d]['regen_energy_Wh'].mean() for d in domains]
-        net_energy = [b - r for b, r in zip(battery_energy, regen_energy)]
-
-        x = np.arange(len(domains))
-        width = 0.25
-
-        ax1.bar(x - width, battery_energy, width, label='Battery Energy')
-        ax1.bar(x, regen_energy, width, label='Regen Energy')
-        ax1.bar(x + width, net_energy, width, label='Net Energy')
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(domains)
-        ax1.set_title('Energy Flow Comparison')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        efficiency = [df[df['domain'] == d]['motor_efficiency_actual'].mean() for d in domains]
-        ax2.bar(domains, efficiency)
-        ax2.set_ylabel('Motor Efficiency')
-        ax2.set_title('Overall Motor Efficiency')
-        ax2.tick_params(axis='x', rotation=30)
-        ax2.grid(True, alpha=0.3)
-
-        stress_events = [df[df['domain'] == d]['battery_stress_high_power_events'].mean() for d in domains]
-        ax3.bar(domains, stress_events)
-        ax3.set_ylabel('High Power Events')
-        ax3.set_title('Battery Stress Events')
-        ax3.tick_params(axis='x', rotation=30)
-        ax3.grid(True, alpha=0.3)
-
-        self.fig.tight_layout(pad=2.0)
-        self.draw()
-
-
-class BatteryAnalysisGUI(QMainWindow):
-    def __init__(self, preferred_width=1366, preferred_height=768):
+class DrivingCycleGUI(QMainWindow):
+    def __init__(self):
         super().__init__()
-        self.df = pd.DataFrame()
-        self.generator = DrivingCycleGenerator(duration=600, dt=1.0)
-        self.current_dataset_path = ""
-        self.preferred_width = preferred_width
-        self.preferred_height = preferred_height
+        self.generator = UnifiedDrivingCycleGenerator()
+        self.current_dataset = None
         self.init_ui()
-
+        
     def init_ui(self):
-        self.setWindowTitle("Driving Cycle Generator - Battery Analysis (Fixed Layout)")
-        win_w = int(self.preferred_width * 0.95)
-        win_h = int(self.preferred_height * 0.95)
-        self.setGeometry(50, 50, win_w, win_h)
-
-        self.set_dark_theme()
-
+        self.setWindowTitle("EV Driving Cycle Generator - Multi Domain")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(6, 6, 6, 6)
-        main_layout.setSpacing(8)
-
-        # Left control panel inside a scroll area
-        left_panel_widget = self.create_control_panel()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(left_panel_widget)
-        scroll.setMinimumWidth(360)
-        scroll.setMaximumWidth(520)
-
-        # Right display panel
-        right_panel = self.create_display_panel()
-
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(scroll)
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([420, win_w - 420])
-        self.optimizer_gui, self.performance_gui = add_all_optimization_tabs(self)
-        main_layout.addWidget(splitter)
-
-    def set_dark_theme(self):
-        self.setStyleSheet("""
-            QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; }
-            QGroupBox { font-weight: bold; border: 1px solid #555555; border-radius: 6px; margin-top: 1ex; padding-top: 8px; }
-            QGroupBox::title { color: #88c0d0; left: 10px; padding: 0 5px 0 5px; }
-            QPushButton { background-color: #4c566a; color: white; border: none; padding: 8px 12px; border-radius: 4px; font-weight: bold; }
-            QPushButton:hover { background-color: #5e81ac; } QPushButton:pressed { background-color: #88c0d0; }
-            QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { background-color: #3b4252; color: white; border: 1px solid #555555; border-radius: 3px; padding: 5px; }
-            QLabel { color: #eceff4; }
-            QProgressBar { border: 1px solid #555555; border-radius: 3px; text-align: center; color: white; }
-            QProgressBar::chunk { background-color: #88c0d0; }
-            QTableWidget { background-color: #3b4252; color: white; gridline-color: #555555; border: 1px solid #555555; font-size: 10px; }
-            QHeaderView::section { background-color: #4c566a; color: white; padding: 6px; border: 1px solid #555555; font-size: 10px; font-weight: bold; }
-            QTabWidget::pane { border: 1px solid #555555; background-color: #3b4252; }
-            QTabBar::tab { background-color: #4c566a; color: white; padding: 8px 12px; border: 1px solid #555555; }
-            QTabBar::tab:selected { background-color: #88c0d0; color: #2e3440; }
-        """)
-
-    def browse_output_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if directory:
-            self.output_path_edit.setText(directory)
-
-    def create_control_panel(self):
-        control_panel = QWidget()
-        layout = QVBoxLayout(control_panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        title = QLabel("Battery Analysis Dashboard")
-        title.setFont(QFont("Arial", 14, QFont.Bold))
+        
+        # Main layout
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Title
+        title = QLabel("Electric Vehicle Driving Cycle Generator")
+        title.setFont(QFont("Arial", 16, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #88c0d0;")
-        layout.addWidget(title)
-
-        # Output directory
-        output_group = QGroupBox("Output Directory")
-        output_layout = QVBoxLayout(output_group)
-        output_path_layout = QHBoxLayout()
-        output_path_layout.addWidget(QLabel("Output Path:"))
-        self.output_path_edit = QLineEdit(os.path.join(os.getcwd(), "battery_analysis_dataset"))
-        output_path_layout.addWidget(self.output_path_edit)
-        self.browse_btn = QPushButton("Browse")
-        self.browse_btn.clicked.connect(self.browse_output_directory)
-        output_path_layout.addWidget(self.browse_btn)
-        output_layout.addLayout(output_path_layout)
-        layout.addWidget(output_group)
-
-        # Vehicle parameters
-        vehicle_group = QGroupBox("Vehicle Parameters")
-        vehicle_layout = QFormLayout(vehicle_group)
-        self.mass_spin = QDoubleSpinBox(); self.mass_spin.setRange(500, 5000); self.mass_spin.setValue(1500); self.mass_spin.setSuffix(" kg")
-        vehicle_layout.addRow("Mass:", self.mass_spin)
-        self.cd_spin = QDoubleSpinBox(); self.cd_spin.setRange(0.1, 1.0); self.cd_spin.setValue(0.29); self.cd_spin.setDecimals(3)
-        vehicle_layout.addRow("Drag coefficient:", self.cd_spin)
-        self.area_spin = QDoubleSpinBox(); self.area_spin.setRange(1.0, 5.0); self.area_spin.setValue(2.2); self.area_spin.setSuffix(" m²")
-        vehicle_layout.addRow("Frontal area:", self.area_spin)
-        layout.addWidget(vehicle_group)
-
-        # Battery params
-        battery_group = QGroupBox("Battery Parameters")
-        battery_layout = QFormLayout(battery_group)
-        self.battery_capacity_spin = QDoubleSpinBox(); self.battery_capacity_spin.setRange(10,200); self.battery_capacity_spin.setValue(50); self.battery_capacity_spin.setSuffix(" kWh")
-        battery_layout.addRow("Battery capacity:", self.battery_capacity_spin)
-        self.motor_eff_spin = QDoubleSpinBox(); self.motor_eff_spin.setRange(0.1,1.0); self.motor_eff_spin.setValue(0.85); self.motor_eff_spin.setDecimals(3)
-        battery_layout.addRow("Motor efficiency:", self.motor_eff_spin)
-        self.regen_eff_spin = QDoubleSpinBox(); self.regen_eff_spin.setRange(0.1,1.0); self.regen_eff_spin.setValue(0.70); self.regen_eff_spin.setDecimals(3)
-        battery_layout.addRow("Regen efficiency:", self.regen_eff_spin)
-        self.aux_power_spin = QDoubleSpinBox(); self.aux_power_spin.setRange(0.1,5.0); self.aux_power_spin.setValue(0.5); self.aux_power_spin.setSuffix(" kW")
-        battery_layout.addRow("Auxiliary power:", self.aux_power_spin)
-        layout.addWidget(battery_group)
-
-        # Generation params
-        gen_group = QGroupBox("Generation Parameters")
-        gen_layout = QFormLayout(gen_group)
-        self.samples_spin = QSpinBox(); self.samples_spin.setRange(1,1000); self.samples_spin.setValue(20); self.samples_spin.setSuffix(" samples/domain")
-        gen_layout.addRow("Samples per domain:", self.samples_spin)
-        self.duration_spin = QSpinBox(); self.duration_spin.setRange(60,3600); self.duration_spin.setValue(600); self.duration_spin.setSuffix(" seconds")
-        gen_layout.addRow("Cycle duration:", self.duration_spin)
-        self.dt_spin = QDoubleSpinBox(); self.dt_spin.setRange(0.1,5.0); self.dt_spin.setValue(1.0); self.dt_spin.setSuffix(" seconds")
-        gen_layout.addRow("Time step:", self.dt_spin)
-        layout.addWidget(gen_group)
-
-        # Actions
-        self.generate_btn = QPushButton("Generate Dataset with Battery Analysis")
-        self.generate_btn.clicked.connect(self.generate_dataset)
-        layout.addWidget(self.generate_btn)
-
-        self.load_btn = QPushButton("Load Dataset")
-        self.load_btn.clicked.connect(self.load_dataset)
-        layout.addWidget(self.load_btn)
-
-        self.save_btn = QPushButton("Save Dataset")
-        self.save_btn.clicked.connect(self.save_dataset)
-        self.save_btn.setEnabled(False)
-        layout.addWidget(self.save_btn)
-
+        title.setStyleSheet("padding: 10px; background-color: #2c3e50; color: white;")
+        main_layout.addWidget(title)
+        
+        # Create tab widget
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+        
+        # Setup tabs
+        self.setup_generation_tab()
+        self.setup_visualization_tab()
+        self.setup_analysis_tab()
+        self.setup_export_tab()
+        
+        # Status bar
+        self.statusBar().showMessage("Ready to generate driving cycles")
+        
+    def setup_generation_tab(self):
+        """Tab untuk generate dataset"""
+        generation_tab = QWidget()
+        layout = QVBoxLayout(generation_tab)
+        
+        # Configuration group
+        config_group = QGroupBox("Generation Configuration")
+        config_layout = QVBoxLayout(config_group)
+        
+        # Domain selection
+        domain_layout = QHBoxLayout()
+        domain_layout.addWidget(QLabel("Domains:"))
+        self.domain_checkboxes = {}
+        domains = ['highway', 'congested', 'urban', 'sub_urban', 'hilly']
+        for domain in domains:
+            cb = QCheckBox(domain.title())
+            cb.setChecked(True)
+            self.domain_checkboxes[domain] = cb
+            domain_layout.addWidget(cb)
+        domain_layout.addStretch()
+        config_layout.addLayout(domain_layout)
+        
+        # Method selection
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Methods:"))
+        self.method_checkboxes = {}
+        methods = ['Markov Chain', 'Segment Based', 'Fourier Series', 'Rule Based FSM', 'NSGA-III Optimized']
+        for method in methods:
+            cb = QCheckBox(method)
+            cb.setChecked(True)
+            self.method_checkboxes[method] = cb
+            method_layout.addWidget(cb)
+        method_layout.addStretch()
+        config_layout.addLayout(method_layout)
+        
+        # Parameters
+        param_layout = QHBoxLayout()
+        param_layout.addWidget(QLabel("Cycles per Domain:"))
+        self.cycles_spin = QSpinBox()
+        self.cycles_spin.setRange(1, 20)
+        self.cycles_spin.setValue(3)
+        param_layout.addWidget(self.cycles_spin)
+        
+        param_layout.addWidget(QLabel("Min Duration (s):"))
+        self.min_duration_spin = QSpinBox()
+        self.min_duration_spin.setRange(60, 1800)
+        self.min_duration_spin.setValue(300)
+        param_layout.addWidget(self.min_duration_spin)
+        
+        param_layout.addWidget(QLabel("Max Duration (s):"))
+        self.max_duration_spin = QSpinBox()
+        self.max_duration_spin.setRange(300, 3600)
+        self.max_duration_spin.setValue(600)
+        param_layout.addWidget(self.max_duration_spin)
+        
+        param_layout.addStretch()
+        config_layout.addLayout(param_layout)
+        
+        layout.addWidget(config_group)
+        
+        # Progress section
+        progress_group = QGroupBox("Generation Progress")
+        progress_layout = QVBoxLayout(progress_group)
+        
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        # Preview
-        preview_group = QGroupBox("Cycle Preview")
-        preview_layout = QVBoxLayout(preview_group)
-        domain_layout = QHBoxLayout()
-        domain_layout.addWidget(QLabel("Domain:"))
-        self.domain_combo = QComboBox()
-        self.domain_combo.addItems(["hilly", "urban", "suburban", "congested", "highway"])
-        domain_layout.addWidget(self.domain_combo)
-        self.sample_spin = QSpinBox()
-        self.sample_spin.setRange(0, 999)
-        self.sample_spin.setValue(0)
-        self.sample_spin.setPrefix("Sample ")
-        domain_layout.addWidget(self.sample_spin)
-        preview_layout.addLayout(domain_layout)
-
-        self.preview_btn = QPushButton("Preview Cycle")
-        self.preview_btn.clicked.connect(self.preview_cycle)
-        self.preview_btn.setEnabled(False)
-        preview_layout.addWidget(self.preview_btn)
-        layout.addWidget(preview_group)
-
-        # Summary
-        summary_group = QGroupBox("Battery Summary")
-        summary_layout = QVBoxLayout(summary_group)
-        self.summary_label = QLabel("No analysis available")
-        self.summary_label.setWordWrap(True)
-        summary_layout.addWidget(self.summary_label)
-        layout.addWidget(summary_group)
-
-        layout.addStretch()
-        return control_panel
-
-    def create_display_panel(self):
-        display_panel = QWidget()
-        layout = QVBoxLayout(display_panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        self.tabs = QTabWidget()
-
-        # Table tab
-        self.table_tab = QWidget()
-        table_layout = QVBoxLayout(self.table_tab)
-        table_info = QLabel("Driving cycle indicators with battery analysis")
-        table_info.setStyleSheet("color: #88c0d0; font-style: italic; padding: 5px;")
-        table_layout.addWidget(table_info)
-        self.data_table = QTableWidget()
-        self.data_table.setMinimumHeight(220)
-        table_layout.addWidget(self.data_table)
-
-        # Battery analysis
-        self.battery_tab = QWidget()
-        battery_layout = QVBoxLayout(self.battery_tab)
-        battery_info = QLabel("Battery performance analysis across domains")
-        battery_info.setStyleSheet("color: #88c0d0; font-style: italic; padding: 5px;")
-        battery_layout.addWidget(battery_info)
-        self.battery_canvas = MPLCanvas(self, width=8, height=5)
-        battery_layout.addWidget(self.battery_canvas)
-        battery_layout.addStretch()
-
-        # Comparison
-        self.comparison_tab = QWidget()
-        comparison_layout = QVBoxLayout(self.comparison_tab)
-        comparison_info = QLabel("Domain comparison for battery consumption")
-        comparison_info.setStyleSheet("color: #88c0d0; font-style: italic; padding: 5px;")
-        comparison_layout.addWidget(comparison_info)
-        self.comparison_canvas = MPLCanvas(self, width=8, height=5)
-        comparison_layout.addWidget(self.comparison_canvas)
-        comparison_layout.addStretch()
-
-        # Files
-        self.files_tab = QWidget()
-        files_layout = QVBoxLayout(self.files_tab)
-        files_info = QLabel("Generated files structure:")
-        files_info.setStyleSheet("color: #88c0d0; font-style: italic; padding: 5px;")
-        files_layout.addWidget(files_info)
-        self.files_text = QLabel("No dataset loaded")
-        self.files_text.setWordWrap(True)
-        self.files_text.setStyleSheet("font-family: monospace; background-color: #3b4252; padding: 10px; border-radius: 5px;")
-        files_layout.addWidget(self.files_text)
-
-        # Add tabs
-        self.tabs.addTab(self.table_tab, "Data Table")
-        self.tabs.addTab(self.battery_tab, "Battery Analysis")
-        self.tabs.addTab(self.comparison_tab, "Domain Comparison")
-        self.tabs.addTab(self.files_tab, "File Structure")
-
-        layout.addWidget(self.tabs)
-        return display_panel
-
+        progress_layout.addWidget(self.progress_bar)
+        
+        self.progress_label = QLabel("Ready to generate")
+        progress_layout.addWidget(self.progress_label)
+        
+        # Control buttons
+        button_layout = QHBoxLayout()
+        self.generate_btn = QPushButton("Generate Dataset")
+        self.generate_btn.clicked.connect(self.generate_dataset)
+        self.generate_btn.setStyleSheet("QPushButton { background-color: #27ae60; color: white; font-weight: bold; }")
+        button_layout.addWidget(self.generate_btn)
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.cancel_generation)
+        self.cancel_btn.setEnabled(False)
+        button_layout.addWidget(self.cancel_btn)
+        
+        progress_layout.addLayout(button_layout)
+        layout.addWidget(progress_group)
+        
+        # Results summary
+        results_group = QGroupBox("Generation Results")
+        results_layout = QVBoxLayout(results_group)
+        self.results_text = QTextEdit()
+        self.results_text.setMaximumHeight(150)
+        results_layout.addWidget(self.results_text)
+        layout.addWidget(results_group)
+        
+        self.tabs.addTab(generation_tab, "Generation")
+        
+    def setup_visualization_tab(self):
+        """Tab untuk visualisasi dataset"""
+        visualization_tab = QWidget()
+        layout = QVBoxLayout(visualization_tab)
+        
+        # Control panel
+        control_layout = QHBoxLayout()
+        
+        control_layout.addWidget(QLabel("Domain:"))
+        self.viz_domain_combo = QComboBox()
+        self.viz_domain_combo.addItems(['All', 'highway', 'congested', 'urban', 'sub_urban', 'hilly'])
+        control_layout.addWidget(self.viz_domain_combo)
+        
+        control_layout.addWidget(QLabel("Method:"))
+        self.viz_method_combo = QComboBox()
+        self.viz_method_combo.addItems(['All', 'Markov Chain', 'Segment Based', 'Fourier Series', 'Rule Based FSM', 'NSGA-III Optimized'])
+        control_layout.addWidget(self.viz_method_combo)
+        
+        control_layout.addWidget(QLabel("Cycle ID:"))
+        self.viz_cycle_spin = QSpinBox()
+        self.viz_cycle_spin.setRange(0, 1000)
+        control_layout.addWidget(self.viz_cycle_spin)
+        
+        self.viz_btn = QPushButton("Update Visualization")
+        self.viz_btn.clicked.connect(self.update_visualization)
+        control_layout.addWidget(self.viz_btn)
+        
+        control_layout.addStretch()
+        layout.addLayout(control_layout)
+        
+        # Matplotlib canvas
+        self.viz_canvas = MatplotlibCanvas(self, width=10, height=8)
+        layout.addWidget(self.viz_canvas)
+        
+        self.tabs.addTab(visualization_tab, "Visualization")
+        
+    def setup_analysis_tab(self):
+        """Tab untuk analisis dataset"""
+        analysis_tab = QWidget()
+        layout = QVBoxLayout(analysis_tab)
+        
+        # Analysis controls
+        analysis_control_layout = QHBoxLayout()
+        self.analyze_btn = QPushButton("Analyze Dataset")
+        self.analyze_btn.clicked.connect(self.analyze_dataset)
+        analysis_control_layout.addWidget(self.analyze_btn)
+        analysis_control_layout.addStretch()
+        layout.addLayout(analysis_control_layout)
+        
+        # Analysis results
+        self.analysis_text = QTextEdit()
+        layout.addWidget(self.analysis_text)
+        
+        self.tabs.addTab(analysis_tab, "Analysis")
+        
+    def setup_export_tab(self):
+        """Tab untuk export dataset"""
+        export_tab = QWidget()
+        layout = QVBoxLayout(export_tab)
+        
+        # Export controls
+        export_group = QGroupBox("Export Options")
+        export_layout = QVBoxLayout(export_group)
+        
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(QLabel("Export Format:"))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["CSV", "Excel", "JSON"])
+        format_layout.addWidget(self.format_combo)
+        format_layout.addStretch()
+        export_layout.addLayout(format_layout)
+        
+        # File selection
+        file_layout = QHBoxLayout()
+        self.file_path_edit = QTextEdit()
+        self.file_path_edit.setMaximumHeight(30)
+        self.file_path_edit.setText("driving_cycles.csv")
+        file_layout.addWidget(QLabel("File:"))
+        file_layout.addWidget(self.file_path_edit)
+        
+        self.browse_btn = QPushButton("Browse")
+        self.browse_btn.clicked.connect(self.browse_file)
+        file_layout.addWidget(self.browse_btn)
+        export_layout.addLayout(file_layout)
+        
+        layout.addWidget(export_group)
+        
+        # Export button
+        self.export_btn = QPushButton("Export Dataset")
+        self.export_btn.clicked.connect(self.export_dataset)
+        self.export_btn.setStyleSheet("QPushButton { background-color: #2980b9; color: white; font-weight: bold; }")
+        layout.addWidget(self.export_btn)
+        
+        # Export status
+        self.export_status = QTextEdit()
+        self.export_status.setMaximumHeight(100)
+        layout.addWidget(self.export_status)
+        
+        self.tabs.addTab(export_tab, "Export")
+        
     def generate_dataset(self):
-        # Update generator params
-        self.generator.duration = self.duration_spin.value()
-        self.generator.dt = self.dt_spin.value()
-        self.generator.vehicle_params = {
-            "mass": self.mass_spin.value(),
-            "Cd": self.cd_spin.value(),
-            "A": self.area_spin.value(),
-            "Crr": 0.015,
-            "rho": 1.225,
-            "battery_capacity": self.battery_capacity_spin.value(),
-            "motor_efficiency": self.motor_eff_spin.value(),
-            "regen_efficiency": self.regen_eff_spin.value(),
-            "auxiliary_power": self.aux_power_spin.value(),
-            "initial_soc": 100
-        }
-
-        output_dir = self.output_path_edit.text().strip()
-        if not output_dir:
-            QMessageBox.warning(self, "Warning", "Please specify output directory!")
+        """Generate dataset berdasarkan konfigurasi"""
+        # Get selected domains
+        selected_domains = [domain for domain, cb in self.domain_checkboxes.items() if cb.isChecked()]
+        if not selected_domains:
+            QMessageBox.warning(self, "Warning", "Please select at least one domain")
             return
-
-        self.progress_bar.setVisible(True)
+        
+        # Get selected methods
+        selected_methods = [method for method, cb in self.method_checkboxes.items() if cb.isChecked()]
+        if not selected_methods:
+            QMessageBox.warning(self, "Warning", "Please select at least one method")
+            return
+        
+        # Setup UI for generation
         self.generate_btn.setEnabled(False)
-
-        self.thread = GenerationThread(self.generator, self.samples_spin.value(), output_dir)
-        self.thread.progress.connect(self.progress_bar.setValue)
-        self.thread.finished.connect(self.on_generation_finished)
-        self.thread.error.connect(self.on_generation_error)
-        self.thread.start()
-
-    def on_generation_finished(self, output_dir):
-        self.current_dataset_path = output_dir
-        self.progress_bar.setVisible(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Starting generation...")
+        
+        # Start generation thread
+        duration_range = (self.min_duration_spin.value(), self.max_duration_spin.value())
+        self.generation_thread = GenerationThread(
+            self.generator, selected_domains, selected_methods, 
+            self.cycles_spin.value(), duration_range
+        )
+        self.generation_thread.progress_signal.connect(self.update_progress)
+        self.generation_thread.finished_signal.connect(self.generation_finished)
+        self.generation_thread.error_signal.connect(self.generation_error)
+        self.generation_thread.start()
+        
+    def cancel_generation(self):
+        """Cancel generation process"""
+        if hasattr(self, 'generation_thread') and self.generation_thread.isRunning():
+            self.generation_thread.terminate()
+            self.generation_thread.wait()
+        self.reset_generation_ui()
+        self.statusBar().showMessage("Generation cancelled")
+        
+    def reset_generation_ui(self):
+        """Reset UI setelah generation selesai/dibatalkan"""
         self.generate_btn.setEnabled(True)
-        self.save_btn.setEnabled(True)
-        self.preview_btn.setEnabled(True)
-        self.load_metadata()
-        QMessageBox.information(self, "Success",
-                                f"Generated dataset with battery analysis!\nOutput directory: {output_dir}\nTotal cycles: {len(self.df)}")
-
-    def on_generation_error(self, error_msg):
+        self.cancel_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
-        self.generate_btn.setEnabled(True)
-        QMessageBox.critical(self, "Error", f"Generation failed:\n{error_msg}")
-
-    def load_dataset(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Dataset Directory")
-        if directory:
-            self.current_dataset_path = directory
-            self.load_metadata()
-
-    def load_metadata(self):
-        if not self.current_dataset_path:
+        
+    def update_progress(self, value, message):
+        """Update progress bar dan label"""
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(message)
+        
+    def generation_finished(self, dataset):
+        """Handle ketika generation selesai"""
+        self.current_dataset = dataset
+        self.reset_generation_ui()
+        
+        # Update results summary
+        total_cycles = len(dataset)
+        domains = set(cycle['metadata']['domain'] for cycle in dataset)
+        methods = set(cycle['metadata']['method'] for cycle in dataset)
+        
+        # Calculate average score
+        avg_score = np.mean([cycle['metadata']['validation']['overall_score'] for cycle in dataset])
+        pass_count = sum(1 for cycle in dataset if cycle['metadata']['validation']['criteria_met'])
+        
+        summary = f"""Generation Completed!
+Total Cycles: {total_cycles}
+Domains: {', '.join(domains)}
+Methods: {', '.join(methods)}
+Average Validation Score: {avg_score:.3f}
+Passed Validation: {pass_count}/{total_cycles} ({pass_count/total_cycles*100:.1f}%)
+"""
+        self.results_text.setText(summary)
+        self.statusBar().showMessage(f"Generation completed: {total_cycles} cycles generated")
+        
+        # Enable analysis and export tabs
+        self.analyze_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        
+    def generation_error(self, error_message):
+        """Handle error selama generation"""
+        self.reset_generation_ui()
+        QMessageBox.critical(self, "Generation Error", f"Error during generation:\n{error_message}")
+        self.statusBar().showMessage("Generation failed")
+        
+    def update_visualization(self):
+        """Update visualization berdasarkan selection"""
+        if self.current_dataset is None:
+            QMessageBox.information(self, "Info", "No dataset available. Please generate dataset first.")
             return
-        metadata_path = os.path.join(self.current_dataset_path, "metadata.csv")
-        if os.path.exists(metadata_path):
-            try:
-                self.df = pd.read_csv(metadata_path)
-                self.save_btn.setEnabled(True)
-                self.preview_btn.setEnabled(True)
-                self.update_display()
-                QMessageBox.information(self, "Success", f"Loaded {len(self.df)} cycles!")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load metadata:\n{str(e)}")
-        else:
-            QMessageBox.warning(self, "Warning", "Metadata file not found in selected directory!")
-
-    def save_dataset(self):
-        if not self.current_dataset_path:
-            QMessageBox.warning(self, "Warning", "No dataset to save!")
+            
+        self.viz_canvas.axes.clear()
+        
+        selected_domain = self.viz_domain_combo.currentText()
+        selected_method = self.viz_method_combo.currentText()
+        selected_cycle_id = self.viz_cycle_spin.value()
+        
+        # Filter cycles
+        filtered_cycles = self.current_dataset
+        if selected_domain != 'All':
+            filtered_cycles = [c for c in filtered_cycles if c['metadata']['domain'] == selected_domain]
+        if selected_method != 'All':
+            filtered_cycles = [c for c in filtered_cycles if c['metadata']['method'] == selected_method]
+        if selected_cycle_id > 0:
+            filtered_cycles = [c for c in filtered_cycles if c['metadata']['cycle_id'] == selected_cycle_id]
+            
+        if not filtered_cycles:
+            self.viz_canvas.axes.text(0.5, 0.5, 'No cycles match the criteria', 
+                                    ha='center', va='center', transform=self.viz_canvas.axes.transAxes)
+            self.viz_canvas.draw()
             return
-        target_dir = QFileDialog.getExistingDirectory(self, "Select Target Directory")
-        if not target_dir:
+            
+        # Plot first matching cycle
+        cycle = filtered_cycles[0]
+        time = cycle['time']
+        velocity = cycle['velocity']
+        
+        # Create plot
+        self.viz_canvas.axes.plot(time, velocity, 'b-', linewidth=1, alpha=0.8)
+        self.viz_canvas.axes.set_xlabel('Time (s)')
+        self.viz_canvas.axes.set_ylabel('Velocity (km/h)')
+        
+        metadata = cycle['metadata']
+        validation = metadata['validation']
+        title = f"{metadata['domain'].title()} - {metadata['method']} (Cycle {metadata['cycle_id']})"
+        title += f"\nScore: {validation['overall_score']:.3f} - {'PASS' if validation['criteria_met'] else 'FAIL'}"
+        self.viz_canvas.axes.set_title(title)
+        self.viz_canvas.axes.grid(True, alpha=0.3)
+        
+        self.viz_canvas.draw()
+        
+    def analyze_dataset(self):
+        """Analyze current dataset"""
+        if self.current_dataset is None:
+            QMessageBox.information(self, "Info", "No dataset available. Please generate dataset first.")
             return
+            
         try:
-            import shutil, datetime
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_dir_name = f"battery_analysis_{timestamp}"
-            target_path = os.path.join(target_dir, new_dir_name)
-            shutil.copytree(self.current_dataset_path, target_path)
-            QMessageBox.information(self, "Success",
-                                    f"Dataset saved to:\n{target_path}\n\nTotal files: {self.count_files(target_path)}")
-            self.current_dataset_path = target_path
-            self.output_path_edit.setText(target_path)
+            analysis = self.generator.analyze_dataset(self.current_dataset)
+            
+            # Format analysis results
+            analysis_text = "=== DATASET ANALYSIS ===\n\n"
+            
+            # Overall stats
+            overall = analysis['overall_stats']
+            analysis_text += f"OVERALL STATISTICS:\n"
+            analysis_text += f"Total Cycles: {overall['total_cycles']}\n"
+            analysis_text += f"Average Score: {overall['avg_score']:.3f}\n"
+            analysis_text += f"Standard Deviation: {overall['std_score']:.3f}\n"
+            analysis_text += f"Pass Rate: {overall['pass_rate']:.1%}\n\n"
+            
+            # Method performance
+            analysis_text += "METHOD PERFORMANCE:\n"
+            for method, perf in analysis['method_performance'].items():
+                analysis_text += f"{method:20} | Score: {perf['avg_score']:.3f} | Pass Rate: {perf['pass_rate']:.1%}\n"
+            analysis_text += "\n"
+            
+            # Domain performance
+            analysis_text += "DOMAIN PERFORMANCE:\n"
+            for domain, perf in analysis['domain_performance'].items():
+                analysis_text += f"{domain:15} | Score: {perf['avg_score']:.3f} | Pass Rate: {perf['pass_rate']:.1%}\n"
+            
+            self.analysis_text.setText(analysis_text)
+            
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save dataset:\n{str(e)}")
-
-    def count_files(self, directory):
-        count = 0
-        for root, dirs, files in os.walk(directory):
-            count += len(files)
-        return count
-
-    def preview_cycle(self):
-        if self.df.empty or not self.current_dataset_path:
-            QMessageBox.warning(self, "Warning", "No dataset available!")
+            QMessageBox.critical(self, "Analysis Error", f"Error during analysis:\n{str(e)}")
+            
+    def browse_file(self):
+        """Browse untuk file export"""
+        formats = {
+            "CSV": "CSV Files (*.csv)",
+            "Excel": "Excel Files (*.xlsx)",
+            "JSON": "JSON Files (*.json)"
+        }
+        
+        selected_format = self.format_combo.currentText()
+        file_filter = formats[selected_format]
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Dataset", "", file_filter
+        )
+        
+        if file_path:
+            self.file_path_edit.setText(file_path)
+            
+    def export_dataset(self):
+        """Export dataset ke file"""
+        if self.current_dataset is None:
+            QMessageBox.information(self, "Info", "No dataset available. Please generate dataset first.")
             return
-        domain = self.domain_combo.currentText()
-        sample_num = self.sample_spin.value()
-        cycle_id = f"{domain}_{sample_num:03d}"
-        csv_path = os.path.join(self.current_dataset_path, domain, f"{cycle_id}.csv")
-        if not os.path.exists(csv_path):
-            QMessageBox.warning(self, "Warning", f"Cycle file not found: {csv_path}")
+            
+        file_path = self.file_path_edit.toPlainText()
+        if not file_path:
+            QMessageBox.warning(self, "Warning", "Please specify a file path")
             return
+            
         try:
-            cycle_df = pd.read_csv(csv_path)
-            time = cycle_df['time'].values
-            velocity = cycle_df['velocity'].values
-            self.battery_canvas.plot_cycle(time, velocity, domain, cycle_id)
-            self.tabs.setCurrentIndex(1)
+            # Convert dataset to DataFrame
+            all_data = []
+            for cycle in self.current_dataset:
+                cycle_df = pd.DataFrame({
+                    'time': cycle['time'],
+                    'velocity': cycle['velocity'],
+                    'acceleration': cycle['acceleration'],
+                    'road_gradient': cycle['road_gradient'],
+                    'domain': cycle['metadata']['domain'],
+                    'method': cycle['metadata']['method'],
+                    'cycle_id': cycle['metadata']['cycle_id'],
+                    'duration': cycle['metadata']['duration'],
+                    'validation_score': cycle['metadata']['validation']['overall_score'],
+                    'validation_pass': cycle['metadata']['validation']['criteria_met']
+                })
+                
+                # Add statistics
+                stats = cycle['metadata']['validation']['stats']
+                for key, value in stats.items():
+                    cycle_df[f'stat_{key}'] = value
+                
+                all_data.append(cycle_df)
+            
+            final_df = pd.concat(all_data, ignore_index=True)
+            
+            # Export based on format
+            export_format = self.format_combo.currentText()
+            if export_format == "CSV":
+                final_df.to_csv(file_path, index=False)
+            elif export_format == "Excel":
+                final_df.to_excel(file_path, index=False)
+            elif export_format == "JSON":
+                final_df.to_json(file_path, orient='records', indent=2)
+                
+            # Update status
+            file_size = len(final_df)  # Simplified size calculation
+            self.export_status.setText(f"Export successful!\n"
+                                     f"File: {file_path}\n"
+                                     f"Records: {len(final_df)}\n"
+                                     f"Format: {export_format}")
+            self.statusBar().showMessage(f"Dataset exported to {file_path}")
+            
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load cycle file:\n{str(e)}")
-
-    def update_display(self):
-        if self.df.empty:
-            return
-        self.update_table()
-        self.update_battery_analysis()
-        self.update_comparison()
-        self.update_summary()
-        self.update_files_structure()
-
-    def update_table(self):
-        if self.df.empty:
-            return
-        battery_columns = ['cycle_id', 'domain', 'battery_Wh_per_km', 'battery_energy_Wh',
-                          'regen_energy_Wh', 'final_soc_percent', 'c_rate_peak', 'c_rate_avg']
-        other_columns = ['avg_speed', 'max_speed', 'distance_km', 'ev_Wh_per_km']
-        display_columns = battery_columns + [col for col in other_columns if col not in battery_columns]
-        available_columns = [col for col in display_columns if col in self.df.columns]
-
-        self.data_table.setRowCount(len(self.df))
-        self.data_table.setColumnCount(len(available_columns))
-        self.data_table.setHorizontalHeaderLabels(available_columns)
-
-        for i, row in self.df.iterrows():
-            for j, col in enumerate(available_columns):
-                value = row[col]
-                if isinstance(value, (int, np.integer)):
-                    display_value = str(value)
-                elif isinstance(value, (float, np.floating)):
-                    if abs(value) < 0.001 or abs(value) > 10000:
-                        display_value = f"{value:.4e}"
-                    else:
-                        display_value = f"{value:.4f}"
-                else:
-                    display_value = str(value)
-
-                item = QTableWidgetItem(display_value)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-
-                if col == 'battery_Wh_per_km':
-                    try:
-                        numv = float(value)
-                        if numv > 300:
-                            item.setBackground(QColor('#bf616a'))
-                        elif numv < 150:
-                            item.setBackground(QColor('#a3be8c'))
-                    except Exception:
-                        pass
-                elif col == 'domain':
-                    color_map = {
-                        'hilly': '#8fbcbb',
-                        'urban': '#a3be8c',
-                        'suburban': '#ebcb8b',
-                        'congested': '#bf616a',
-                        'highway': '#b48ead'
-                    }
-                    item.setBackground(QColor(color_map.get(value, '#4c566a')))
-
-                self.data_table.setItem(i, j, item)
-
-        # Stretch columns to fill space nicely and avoid overflow
-        self.data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.data_table.setSortingEnabled(True)
-
-    def update_battery_analysis(self):
-        self.battery_canvas.plot_battery_analysis(self.df)
-
-    def update_comparison(self):
-        self.comparison_canvas.plot_comparison(self.df)
-
-    def update_summary(self):
-        if self.df.empty:
-            self.summary_label.setText("No analysis available")
-            return
-        total_cycles = len(self.df)
-        avg_consumption = self.df['battery_Wh_per_km'].mean()
-        avg_regen = self.df['regen_energy_Wh'].mean()
-        avg_soc_consumed = self.df['soc_consumed_percent'].mean()
-        max_c_rate = self.df['c_rate_peak'].max()
-
-        domain_eff = self.df.groupby('domain')['battery_Wh_per_km'].mean()
-        most_efficient_domain = domain_eff.idxmin()
-        least_efficient_domain = domain_eff.idxmax()
-
-        summary_text = f"""
-        <b>Battery Analysis Summary:</b><br>
-        Total cycles analyzed: {total_cycles}<br>
-        Average consumption: {avg_consumption:.1f} Wh/km<br>
-        Average regeneration: {avg_regen:.1f} Wh<br>
-        Average SOC consumed: {avg_soc_consumed:.2f}%<br>
-        Maximum C-rate: {max_c_rate:.2f}C<br><br>
-
-        <b>Efficiency by Domain:</b><br>
-        Most efficient: {most_efficient_domain} ({domain_eff[most_efficient_domain]:.1f} Wh/km)<br>
-        Least efficient: {least_efficient_domain} ({domain_eff[least_efficient_domain]:.1f} Wh/km)<br><br>
-
-        <i>Green: &lt;150 Wh/km, Red: &gt;300 Wh/km</i>
-        """
-        self.summary_label.setText(summary_text)
-
-    def update_files_structure(self):
-        if not self.current_dataset_path or not os.path.exists(self.current_dataset_path):
-            self.files_text.setText("No dataset directory available")
-            return
-        files_structure = f"Dataset Directory: {self.current_dataset_path}\n\n"
-        for root, dirs, files in os.walk(self.current_dataset_path):
-            level = root.replace(self.current_dataset_path, '').count(os.sep)
-            indent = '  ' * level
-            files_structure += f"{indent}{os.path.basename(root)}/\n"
-            subindent = '  ' * (level + 1)
-            for file in files:
-                if file.endswith('.csv') or file.endswith('.json'):
-                    files_structure += f"{subindent}{file}\n"
-        self.files_text.setText(files_structure)
-
+            QMessageBox.critical(self, "Export Error", f"Error during export:\n{str(e)}")
+            self.export_status.setText(f"Export failed: {str(e)}")
 
 def main():
-    if hasattr(Qt, 'AA_EnableHighDpiScaling'):
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
     app = QApplication(sys.argv)
+    
+    # Set application style
     app.setStyle('Fusion')
-
-    window = BatteryAnalysisGUI(preferred_width=1366, preferred_height=768)
+    
+    # Create and show main window
+    window = DrivingCycleGUI()
     window.show()
+    
     sys.exit(app.exec_())
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
