@@ -1,4 +1,4 @@
-# EvoMeta-DC
+# EvoMeta Optimizer: Hybrid Evolutionary + Metaheuristic Algorith for Synthetic Driving Cycle Dataset Generation
 EvoMeta Optimizer: Hybrid NSGA-III + Metaheuristic for Synthetic Dataset Driving Cycle Generation
 EvoMeta Optimizer is a research-oriented framework for generating synthetic multi-domain driving cycles using a hybrid evolutionary + metaheuristic algorithm approach. It targets electric vehicle and eco-driving studies by producing statistically consistent, simulation-ready driving cycle datasets derived from algorithmic.
 
