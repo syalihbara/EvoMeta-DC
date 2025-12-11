@@ -7,7 +7,7 @@ EvoMeta Optimizer is a research-oriented framework for generating synthetic mult
 - Synthetic driving cycles are needed to preserve key kinematic and statistical properties while protecting data privacy.
 - Many-objective optimization (NSGA-III) combined with a metaheuristic search can better explore trade-offs between energy use, drivability, and statistical representativeness.
 - EvoMeta Optimizer provides a reusable, open implementation of this hybrid approach for EV researchers and practitioners.
-- 
+  
 ## Key Features
 - Multi-/many-objective optimization using NSGA-III for driving cycle synthesis.
 - Pluggable metaheuristic layer (e.g., Honey Badger, PSO, etc.) for enhanced exploration and convergence.
