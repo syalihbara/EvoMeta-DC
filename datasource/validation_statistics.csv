@@ -1,0 +1,6 @@
+,attempts,valid,invalid
+urban,52,50,2
+suburban,250,0,250
+highway,50,50,0
+congested,50,50,0
+hilly,250,0,250
