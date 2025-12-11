@@ -1,0 +1,306 @@
+# hybrid_nsga3_hba.py
+# Hybrid selection module: treat each CSV file in a domain folder as one individual.
+# Uses metadata.csv for fast objective evaluation. Produces timestamped result folder
+# with pareto_front.csv and copies of selected cycle CSV files.
+#
+# Objectives (minimize):
+#   f1 = battery_Wh_per_km
+#   f2 = -battery_efficiency_%    (we maximize battery_efficiency -> minimize negative)
+#   f3 = -eco_driving_index       (we maximize EDI -> minimize negative)
+#
+# If pymoo is available, try to use NSGA3 for reference-direction-based selection.
+# If not available, fallback to nondominated sorting + HBA-like re-ranking for diversity.
+#
+# Author: ChatGPT (2025)
+# Usage example:
+#   from hybrid_nsga3_hba import run_nsga3_hba_on_domain
+#   res_dir = run_nsga3_hba_on_domain(domain_dir="dataset/urban",
+#                                     metadata_path="dataset/metadata.csv",
+#                                     output_root="dataset",
+#                                     pop_limit=None,
+#                                     gens=40)
+
+import os
+import shutil
+import datetime
+import math
+import glob
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# helpers to try import pymoo (optional)
+try:
+    from pymoo.algorithms.moo.nsga3 import NSGA3
+    from pymoo.factory import get_reference_directions
+    from pymoo.optimize import minimize
+    from pymoo.core.problem import ElementwiseProblem
+    PYMOO_AVAILABLE = True
+except Exception:
+    PYMOO_AVAILABLE = False
+
+
+def _ensure_cols(df, cols_with_defaults):
+    """Ensure dataframe has columns; if missing, fill with default values."""
+    for col, default in cols_with_defaults.items():
+        if col not in df.columns:
+            df[col] = default
+    return df
+
+
+def _compute_objectives_from_metadata(df):
+    """
+    Given metadata dataframe (rows = cycle_id individuals), compute objectives:
+      f1 = battery_Wh_per_km (minimize)
+      f2 = -battery_efficiency_% (minimize negative => maximize battery_efficiency)
+      f3 = -eco_driving_index (minimize negative => maximize EDI)
+    Returns numpy array shape (n,3)
+    """
+    defaults = {
+        'battery_Wh_per_km': 200.0,
+        'battery_efficiency_%': 85.0,
+        'eco_driving_index': 0.5
+    }
+    df = _ensure_cols(df, defaults)
+
+    f1 = df['battery_Wh_per_km'].astype(float).to_numpy()
+    f2 = -df['battery_efficiency_%'].astype(float).to_numpy()
+    f3 = -df['eco_driving_index'].astype(float).to_numpy()
+    F = np.vstack([f1, f2, f3]).T
+    return F
+
+
+def nondominated_sort(F):
+    """
+    Simple nondominated sorting that returns boolean mask of Pareto-optimal points.
+    F: (n, m) objective array to MINIMIZE
+    Returns: boolean array length n where True means nondominated.
+    """
+    n = F.shape[0]
+    dominated = np.zeros(n, dtype=bool)
+    for i in range(n):
+        if dominated[i]:
+            continue
+        for j in range(n):
+            if i == j:
+                continue
+            # j dominates i?
+            if np.all(F[j] <= F[i]) and np.any(F[j] < F[i]):
+                dominated[i] = True
+                break
+    return ~dominated
+
+
+def crowding_distance(F):
+    """
+    Compute crowding distance for population F (n,m).
+    Returns array of distances.
+    """
+    n, m = F.shape
+    dist = np.zeros(n, dtype=float)
+    for j in range(m):
+        obj = F[:, j]
+        idx = np.argsort(obj)
+        dist[idx[0]] = dist[idx[-1]] = np.inf
+        denom = obj[idx[-1]] - obj[idx[0]]
+        if denom == 0:
+            continue
+        for k in range(1, n-1):
+            dist[idx[k]] += (obj[idx[k+1]] - obj[idx[k-1]]) / denom
+    return dist
+
+
+def hba_intensify_select(df, F, pareto_idx, budget=20):
+    """
+    HBA-like intensification: from current Pareto set, attempt to enrich diversity
+    by selecting additional near-Pareto individuals based on weighted-sum improvement.
+    Since individuals are fixed files (discrete), we pick candidates from neighbors
+    measured by Euclidean distance in normalized objective space.
+    - df: metadata dataframe (rows correspond to F)
+    - F: objective array (n, m)
+    - pareto_idx: indices currently on pareto front
+    - budget: number of candidates to add (max)
+    Returns: set of selected indices (pareto + extra)
+    """
+    n = F.shape[0]
+    norm_F = (F - np.min(F, axis=0)) / (np.ptp(F, axis=0) + 1e-12)
+    pareto_set = set(np.where(pareto_idx)[0].tolist())
+
+    # Compute distances from each non-pareto to the pareto set (min distance)
+    non_pareto = [i for i in range(n) if i not in pareto_set]
+    if not non_pareto:
+        return pareto_set
+
+    # For each non-pareto, compute min distance to Pareto points
+    min_dists = []
+    for i in non_pareto:
+        dists = [np.linalg.norm(norm_F[i] - norm_F[j]) for j in pareto_set]
+        min_dists.append((i, min(dists) if dists else np.inf))
+
+    # Sort by descending distance (favor diverse far points), pick up to budget
+    min_dists.sort(key=lambda x: -x[1])
+    add_count = min(len(min_dists), budget)
+    for k in range(add_count):
+        pareto_set.add(min_dists[k][0])
+
+    return pareto_set
+
+
+def _save_pareto_and_files(df_meta, selected_idx, domain_dir, result_dir):
+    """
+    Save pareto_front.csv (metadata subset), copy selected .csv files into result_dir/selected_cycles/.
+    """
+    os.makedirs(result_dir, exist_ok=True)
+    selected_df = df_meta.iloc[list(selected_idx)].copy()
+    pareto_path = os.path.join(result_dir, "pareto_front.csv")
+    selected_df.to_csv(pareto_path, index=False)
+
+    # copy cycles
+    sel_dir = os.path.join(result_dir, "selected_cycles")
+    os.makedirs(sel_dir, exist_ok=True)
+
+    # cycle_id column must exist
+    if 'cycle_id' not in df_meta.columns:
+        return pareto_path
+
+    for idx in selected_idx:
+        row = df_meta.iloc[idx]
+        cycle_id = row['cycle_id']
+        # find file in domain_dir that matches cycle_id
+        pattern = os.path.join(domain_dir, f"{cycle_id}*.csv")
+        matches = glob.glob(pattern)
+        if matches:
+            try:
+                shutil.copy2(matches[0], sel_dir)
+            except Exception:
+                pass
+        # else: not found - skip
+
+    return pareto_path
+
+
+def _plot_pareto(F_selected, save_path):
+    """
+    Quick scatter plot of f1 vs f3 colored by f2.
+    F_selected: (k,3)
+    """
+    if F_selected.size == 0:
+        return
+    f1 = F_selected[:, 0]
+    f2 = F_selected[:, 1]
+    f3 = F_selected[:, 2]
+    plt.figure(figsize=(6, 4), dpi=150)
+    sc = plt.scatter(f1, -f3, c=-f2, cmap='viridis', s=40, edgecolors='k')  # plot energy vs EDI (converted)
+    plt.colorbar(sc, label='battery_efficiency (%)')
+    plt.xlabel('Energy (Wh/km) [minimize]')
+    plt.ylabel('Eco-Driving Index (higher better)')
+    plt.title('Pareto front (energy vs EDI) - color=batt_efficiency')
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+
+def run_nsga3_hba_on_domain(domain_dir,
+                            metadata_path,
+                            output_root,
+                            pop_limit=None,
+                            gens=40,
+                            hba_budget=20,
+                            timestamped=True):
+    """
+    Main entry point.
+    - domain_dir: folder containing many CSV files for one domain (e.g., dataset/urban)
+    - metadata_path: path to full metadata.csv (root dataset)
+    - output_root: parent folder where optimization_results_{ts} will be created
+    - pop_limit: if provided, restrict to first N individuals (useful for testing)
+    - gens: number of generations (if pymoo used) — otherwise ignored
+    - hba_budget: number of extra individuals HBA can add to pareto set
+    - timestamped: whether to append timestamp to result folder
+    Returns: path to result_dir
+    """
+    if not os.path.isdir(domain_dir):
+        raise FileNotFoundError(f"Domain folder not found: {domain_dir}")
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(f"Metadata not found: {metadata_path}")
+
+    meta = pd.read_csv(metadata_path)
+    # Filter metadata by domain (based on folder name)
+    domain_name = os.path.basename(os.path.normpath(domain_dir))
+    df_domain = meta[meta['domain'] == domain_name].reset_index(drop=True)
+    if df_domain.empty:
+        raise ValueError(f"No metadata rows found for domain '{domain_name}'")
+
+    # Optionally limit population (for fast tests)
+    if pop_limit is not None:
+        df_domain = df_domain.iloc[:pop_limit].reset_index(drop=True)
+
+    # Compute objectives
+    F = _compute_objectives_from_metadata(df_domain)  # (n,3)
+
+    # Use pymoo NSGA3 if available and number of objectives is 3
+    result_dir = os.path.join(output_root, f"optimization_results_{domain_name}")
+    if timestamped:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_dir = os.path.join(output_root, f"optimization_results_{domain_name}_{ts}")
+    os.makedirs(result_dir, exist_ok=True)
+
+    if PYMOO_AVAILABLE:
+        try:
+            # Implementing an ElementwiseProblem where decision variable is index (discrete) is awkward.
+            # Instead, use nondominated sorting on F as the "population". NSGA3 usage is more meaningful for continuous decision variables.
+            # However, we can still use pymoo's reference directions to select a diverse Pareto set:
+            ref_dirs = get_reference_directions("das-dennis", 3, n_partitions=12)
+            # Compute nondominated front first
+            nd_mask = nondominated_sort(F)
+            nd_idx = np.where(nd_mask)[0]
+            nd_F = F[nd_idx]
+            # If too many, select by projection onto reference directions (approximate)
+            # For simplicity, compute cosine similarity to each reference direction and pick extremes
+            # We'll pick up to len(ref_dirs) * 2 points
+            if len(nd_idx) > len(ref_dirs)*2:
+                # normalize
+                norm_nd = (nd_F - np.min(nd_F, axis=0)) / (np.ptp(nd_F, axis=0) + 1e-12)
+                chosen = set()
+                for rd in ref_dirs:
+                    # compute projections
+                    scores = norm_nd.dot(rd)
+                    best = np.argmin(scores)  # minimize objective -> small projection
+                    chosen.add(nd_idx[best])
+                    if len(chosen) >= len(ref_dirs)*2:
+                        break
+                selected_idx = sorted(list(chosen))
+            else:
+                selected_idx = nd_idx.tolist()
+
+            # HBA intensification: add diverse neighbors
+            selected_set = hba_intensify_select(df_domain, F, nd_mask, budget=hba_budget)
+            final_idx = sorted(list(selected_set))
+        except Exception as e:
+            # fallback to pure ND sort
+            nd_mask = nondominated_sort(F)
+            final_idx = list(np.where(nd_mask)[0])
+    else:
+        # No pymoo: pure nondominated + HBA intensify
+        nd_mask = nondominated_sort(F)
+        selected_set = hba_intensify_select(df_domain, F, nd_mask, budget=hba_budget)
+        final_idx = sorted(list(selected_set))
+
+    # Save pareto front and copy files
+    pareto_path = _save_pareto_and_files(df_domain, final_idx, domain_dir, result_dir)
+
+    # Save population log (basic)
+    pop_log = df_domain.copy()
+    pop_log[['obj_f1', 'obj_f2', 'obj_f3']] = F
+    pop_log.to_csv(os.path.join(result_dir, "population_log.csv"), index=False)
+
+    # Plot pareto (save)
+    try:
+        F_sel = F[final_idx]
+        plot_path = os.path.join(result_dir, "plots")
+        os.makedirs(plot_path, exist_ok=True)
+        _plot_pareto(F_sel, os.path.join(plot_path, "pareto_front.png"))
+    except Exception:
+        pass
+
+    return result_dir
